@@ -1,44 +1,54 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 import pandas as pd
-import io
+from io import BytesIO
 
-app = FastAPI()
+app = FastAPI(title="Excel Cleaner API")
 
+# ✅ Allow frontend (Streamlit, local dev, or Render frontend) to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later
+    allow_origins=["*"],  # later you can restrict to your domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ✅ Home route (to fix 404)
+@app.get("/")
+def home():
+    return {"message": "✅ Excel Cleaner API is running successfully!"}
+
+# ✅ Health check route
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"status": "ok"}
 
+# ✅ Excel cleaning endpoint
 @app.post("/clean")
 async def clean_excel(file: UploadFile = File(...)):
-    raw = await file.read()
-    df = pd.read_excel(io.BytesIO(raw))
+    try:
+        contents = await file.read()
+        df = pd.read_excel(BytesIO(contents))
 
-    # ——— your cleaning logic ———
-    df.dropna(how="all", inplace=True)
-    df.columns = [c.strip() for c in df.columns]
-    # add more of your pro-v1 logic here
+        # --- Cleaning steps ---
+        df.drop_duplicates(inplace=True)
+        df.columns = [c.strip().title() for c in df.columns]
+        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
 
-    # write to in-memory Excel
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
-    buf.seek(0)
+        # Handle missing values (fill empty cells with blank)
+        df.fillna("", inplace=True)
 
-    headers = {
-        "Content-Disposition": 'attachment; filename="cleaned.xlsx"'
-    }
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=headers
-    )
+        # Return cleaned Excel as bytes
+        output = BytesIO()
+        df.to_excel(output, index=False)
+        output.seek(0)
+
+        return {
+            "status": "success",
+            "rows": len(df),
+            "columns": list(df.columns)
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
