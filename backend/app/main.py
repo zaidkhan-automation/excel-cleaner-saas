@@ -1,54 +1,50 @@
-from fastapi import FastAPI, UploadFile, File
-from  fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from io import BytesIO
+import pandas as pd
 
 app = FastAPI(title="Excel Cleaner API")
 
-# ✅ Allow frontend (Streamlit, local dev, or Render frontend) to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later you can restrict to your domain
+    allow_origins=["*"],  # restrict later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Home route (to fix 404)
 @app.get("/")
 def home():
-    return {"message": "✅ Excel Cleaner API is running successfully!"}
+    return {"message": "Excel Cleaner API running successfully"}
 
-# ✅ Health check route
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-# ✅ Excel cleaning endpoint
 @app.post("/clean")
-async def clean_excel(file: UploadFile = File(...)):
+async def clean(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
-        df = pd.read_excel(BytesIO(contents))
+        data = await file.read()
+        df = pd.read_csv(BytesIO(data)) if file.filename.lower().endswith(".csv") else pd.read_excel(BytesIO(data))
 
-        # --- Cleaning steps ---
-        df.drop_duplicates(inplace=True)
-        df.columns = [c.strip().title() for c in df.columns]
-        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        # cleaning logic
+        df = df.drop_duplicates()
 
-        # Handle missing values (fill empty cells with blank)
-        df.fillna("", inplace=True)
+        out = BytesIO()
+        if file.filename.lower().endswith(".csv"):
+            df.to_csv(out, index=False)
+            mtype = "text/csv"
+            fname = "cleaned.csv"
+        else:
+            with pd.ExcelWriter(out, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False)
+            mtype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            fname = "cleaned.xlsx"
+        out.seek(0)
 
-        # Return cleaned Excel as bytes
-        output = BytesIO()
-        df.to_excel(output, index=False)
-        output.seek(0)
-
-        return {
-            "status": "success",
-            "rows": len(df),
-            "columns": list(df.columns)
+        headers = {
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Filename": fname,
+            "X-Clean-Summary": f"rows={len(df)},cols={len(df.columns)}",
         }
+        return StreamingResponse(out, media_type=mtype, headers=headers)
 
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=400, detail=f"Failed: {e}")
